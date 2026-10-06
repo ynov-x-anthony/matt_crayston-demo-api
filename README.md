@@ -16,8 +16,8 @@ volontairement **aucun fichier Docker** dedans, ni `Dockerfile`, ni
 après quête, en faisant grossir ce dépôt.
 
 Sans conteneur, cette API ne démarre pas telle quelle : elle a besoin d'un
-PostgreSQL joignable pour répondre. C'est normal, et c'est tout le sujet de
-la première quête que de la faire tourner dans Docker.
+PostgreSQL joignable pour répondre. C'est normal, et c'est tout le sujet
+de la première quête que de la faire tourner dans Docker.
 
 ## Ce que contient le repo
 
@@ -62,3 +62,160 @@ la première quête que de la faire tourner dans Docker.
   Sous Windows, backend **WSL 2** : travaille depuis un terminal **WSL**.
 - `git`, `curl`. Node est nécessaire **seulement** si tu régénères
   `package-lock.json` (`cd api && npm install`, déjà commité ici).
+
+---
+
+# Rendu — Quête 2 : Le Dockerfile
+
+## Objectif
+
+Produire une image Docker de `demo-api` permettant de démarrer le serveur Node dans un conteneur.
+
+## 1. Dockerfile
+
+Le fichier `api/Dockerfile` a été créé avec :
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY server.js db.js ./
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+Le Dockerfile respecte les bonnes pratiques demandées :
+
+- base légère avec `node:22-alpine` ;
+- dépendances copiées avant le code ;
+- installation avec `npm ci --omit=dev` ;
+- port `3000` exposé ;
+- lancement du serveur avec `CMD`.
+
+## 2. .dockerignore
+
+Le fichier `api/.dockerignore` contient :
+
+```text
+node_modules
+.git
+*.md
+.env*
+```
+
+Il permet notamment d'exclure les dépendances locales, le dépôt Git, les fichiers Markdown et les fichiers d'environnement du contexte de build.
+
+## 3. Construction de l'image
+
+Commande utilisée :
+
+```powershell
+docker build -t demo-api:1.0 ./api
+```
+
+Résultat : build terminé avec succès.
+
+Image obtenue :
+
+```text
+REPOSITORY   TAG   IMAGE ID       SIZE
+demo-api     1.0   e035c32af65c   252MB
+```
+
+## 4. Test du conteneur
+
+Le conteneur a été lancé avec :
+
+```powershell
+docker run -d --name api -p 8080:3000 demo-api:1.0
+```
+
+### Test de `/health`
+
+Commande :
+
+```powershell
+curl.exe -s http://localhost:8080/health
+```
+
+Résultat :
+
+```json
+{"status":"UP"}
+```
+
+### Test de `/`
+
+Commande :
+
+```powershell
+curl.exe -s http://localhost:8080/
+```
+
+Résultat :
+
+```json
+{"ok":true,"app":"demo-api","version":"dev"}
+```
+
+Le conteneur a ensuite été supprimé avec :
+
+```powershell
+docker rm -f api
+```
+
+## 5. Preuve du cache Docker
+
+Après une modification temporaire de `server.js`, l'image a été reconstruite avec :
+
+```powershell
+docker build -t demo-api:1.0 ./api --progress=plain
+```
+
+La commande `npm ci` est restée en cache :
+
+```text
+#8 [4/5] RUN npm ci --omit=dev
+#8 CACHED
+```
+
+La modification temporaire de `server.js` a ensuite été annulée avec :
+
+```powershell
+git restore api/server.js
+```
+
+## 6. Publication de l'image Docker Hub
+
+L'image a été taguée avec :
+
+```powershell
+docker tag demo-api:1.0 mattlec/demo-api:1.0
+```
+
+Puis publiée avec :
+
+```powershell
+docker push mattlec/demo-api:1.0
+```
+
+Image Docker Hub :
+
+https://hub.docker.com/r/mattlec/demo-api
+
+## 7. Repository GitHub
+
+La quête est disponible sur la branche :
+
+https://github.com/ynov-x-anthony/tp-qu-tes-matt-correction/tree/quete-02-dockerfile
+
+## Conclusion
+
+- Dockerfile créé ;
+- `.dockerignore` créé ;
+- image Docker construite ;
+- API testée avec succès ;
+- cache Docker vérifié ;
+- image publiée sur Docker Hub ;
+- branche GitHub créée et poussée.

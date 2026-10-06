@@ -1,179 +1,206 @@
-# Rendu — Quête 4 : Builds multi-étapes et gestion des secrets
+# Rendu — Quête 5 : Les volumes Docker
 
 ## Objectif
 
-Créer un Dockerfile multi-étapes pour `demo-api`, comparer les tailles des images et utiliser un secret au moment du build sans le faire apparaître dans l'image finale.
+Comprendre la persistance des données avec Docker, utiliser un volume nommé PostgreSQL et vérifier que les données restent présentes après la suppression et la recréation d'un conteneur.
 
-## 1. Dockerfile multi-étapes
+## 1. Construction de l'image
 
-Le fichier `api/Dockerfile.multi` a été créé avec deux étapes :
+L'image de l'API a été construite avec :
 
-- `deps` : installation des dépendances de production ;
-- `runtime` : image finale minimale contenant uniquement les éléments nécessaires à l'exécution.
-
-```dockerfile
-# syntax=docker/dockerfile:1
-
-FROM node:22.11-alpine AS deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci --omit=dev
-
-FROM node:22.11-alpine AS runtime
-WORKDIR /app
-COPY --from=deps --chown=node:node /app/node_modules ./node_modules
-COPY --chown=node:node server.js db.js package.json ./
-USER node
-HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-EXPOSE 3000
-CMD ["node", "server.js"]
+```bash
+docker build -t demo-api:1.0 ./api
 ```
 
-## 2. Construction des images
+L'image `demo-api:1.0` a été créée avec succès.
 
-Image de référence :
+## 2. Création du volume PostgreSQL
 
-```powershell
-docker build -t demo-api:naive ./api
+Un volume Docker nommé `demo_pgdata` est utilisé pour stocker les données PostgreSQL :
+
+```bash
+docker volume create demo_pgdata
 ```
 
-Image multi-étapes :
-
-```powershell
-docker build -f api/Dockerfile.multi -t demo-api:multi ./api
-```
-
-## 3. Comparaison des tailles
-
-Résultat obtenu :
+Le volume est monté dans PostgreSQL avec :
 
 ```text
-REPOSITORY   TAG        SIZE
-demo-api     multi      228MB
-demo-api     naive      232MB
+demo_pgdata:/var/lib/postgresql/data
 ```
 
-Calcul du ratio :
+Les données PostgreSQL sont donc stockées dans le volume et non dans la couche d'écriture temporaire du conteneur.
+
+## 3. Lancement de PostgreSQL
+
+Le conteneur `demo-db` utilise l'image :
 
 ```text
-232 / 228 ≈ 1,02×
+postgres:16-alpine
 ```
 
-Le gain obtenu est donc d'environ 4 MB.
+Il est lancé avec :
 
-Le critère de la quête visant une image `multi` au moins 2× plus petite que `naive` n'est pas atteint dans cette configuration.
-
-La raison est que l'image de départ utilise déjà `node:22.11-alpine` ainsi que `npm ci --omit=dev`. Le multi-étapes permet donc surtout de séparer les étapes de construction et d'exécution, mais ne permet pas ici de supprimer une quantité importante de données.
-
-## 4. Vérification du fonctionnement
-
-Le conteneur multi-étapes a été lancé avec :
-
-```powershell
-docker run --rm -d -p 8080:3000 --name api-multi-test demo-api:multi
+```text
+POSTGRES_USER=demo
+POSTGRES_PASSWORD=demo
+POSTGRES_DB=demo
 ```
 
-Test de l'API :
+Le fichier `db/init.sql` est monté en lecture seule dans :
 
-```powershell
-curl.exe -s http://localhost:8080/health
+```text
+/docker-entrypoint-initdb.d/init.sql
 ```
 
-Résultat :
+Le fichier crée la table `products` et ajoute trois produits de démonstration.
+
+## 4. Attente de disponibilité de PostgreSQL
+
+Le script attend que PostgreSQL accepte les connexions avec :
+
+```bash
+until docker exec demo-db pg_isready -U demo; do
+  sleep 1
+done
+```
+
+Le résultat obtenu confirme que PostgreSQL accepte les connexions :
+
+```text
+/var/run/postgresql:5432 - accepting connections
+```
+
+## 5. Lancement de l'API
+
+Le conteneur `demo-api` est lancé sur le même réseau Docker que PostgreSQL.
+
+La variable :
+
+```text
+PGHOST=demo-db
+```
+
+permet à l'API de communiquer avec le conteneur PostgreSQL via son nom Docker.
+
+Le port de l'API est exposé avec :
+
+```text
+-p 8080:3000
+```
+
+## 6. Ajout d'un produit
+
+Le script ajoute le produit demandé :
 
 ```json
-{"status":"UP"}
+{
+  "name": "Casquette Démo",
+  "price_cents": 1200
+}
 ```
 
-L'image `demo-api:multi` fonctionne donc correctement.
+Le produit a été créé avec l'identifiant `4`.
 
-## 5. Gestion du secret au build
+## 7. Vérification avant suppression
 
-Un faux fichier `.npmrc` a été créé temporairement :
+Avant la suppression des conteneurs, la requête `/products` retourne notamment :
+
+```json
+{
+  "id": 4,
+  "name": "Casquette Démo",
+  "price_cents": 1200
+}
+```
+
+Les trois produits initialisés par `init.sql` sont également présents.
+
+## 8. Suppression des conteneurs
+
+Les conteneurs `demo-api` et `demo-db` ont ensuite été supprimés :
+
+```bash
+docker rm -f demo-api
+docker rm -f demo-db
+```
+
+Le volume `demo_pgdata` n'a pas été supprimé.
+
+## 9. Recréation de PostgreSQL et de l'API
+
+Le conteneur PostgreSQL a été recréé en utilisant exactement le même volume :
 
 ```text
-//registry.npmjs.org/:_authToken=FAKE-123
+demo_pgdata:/var/lib/postgresql/data
 ```
 
-Le Dockerfile utilise ensuite BuildKit pour monter ce fichier uniquement pendant le `RUN` :
+L'API a ensuite été recréée et reconnectée à PostgreSQL.
 
-```dockerfile
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci --omit=dev
-```
-
-Le build a été réalisé avec :
-
-```powershell
-docker build --secret id=npmrc,src="$PWD\.npmrc" -f api/Dockerfile.multi -t demo-api:multi ./api
-```
-
-Le build s'est terminé avec succès.
-
-## 6. Vérification du secret dans l'historique
-
-Commande utilisée :
-
-```powershell
-docker history --no-trunc demo-api:multi | Select-String "FAKE-123"
-```
-
-Résultat :
+PostgreSQL est de nouveau devenu disponible :
 
 ```text
+/var/run/postgresql:5432 - accepting connections
 ```
 
-Aucune ligne n'est retournée.
+## 10. Preuve de persistance
 
-Le token `FAKE-123` n'apparaît donc pas dans l'historique de l'image.
+Après la suppression et la recréation du conteneur PostgreSQL, la requête `/products` retourne toujours :
 
-## 7. Vérification du fichier secret dans l'image
-
-La présence de `/root/.npmrc` a été vérifiée avec :
-
-```powershell
-docker run --rm --entrypoint sh demo-api:multi -c "test -e /root/.npmrc && echo 'SECRET PRESENT' || echo 'SECRET ABSENT'"
+```json
+{
+  "id": 4,
+  "name": "Casquette Démo",
+  "price_cents": 1200
+}
 ```
 
-Résultat :
+La donnée `Casquette Démo` a donc survécu à la suppression et à la recréation du conteneur PostgreSQL.
+
+## 11. Vérification du volume
+
+Le volume est toujours présent :
 
 ```text
-SECRET ABSENT
+local     demo_pgdata
 ```
 
-Le fichier contenant le secret n'est donc pas présent dans l'image finale.
+Cela confirme que les données étaient stockées dans le volume nommé `demo_pgdata`.
 
-## 8. Nettoyage du faux secret
+## 12. Script de la quête
 
-Le fichier temporaire `.npmrc` a été supprimé :
-
-```powershell
-Remove-Item .npmrc
-```
-
-Vérification :
-
-```powershell
-Test-Path .npmrc
-```
-
-Résultat :
+Le script automatisant l'ensemble de la démonstration est :
 
 ```text
-False
+volumes_matt_crayston.sh
 ```
 
-Le faux secret n'est donc plus présent localement.
+Il permet de :
+
+- construire l'image `demo-api:1.0` ;
+- créer le volume `demo_pgdata` ;
+- créer le réseau Docker ;
+- lancer PostgreSQL ;
+- attendre que PostgreSQL soit disponible ;
+- lancer l'API ;
+- ajouter `Casquette Démo` ;
+- afficher les produits avant suppression ;
+- supprimer les conteneurs ;
+- recréer PostgreSQL avec le même volume ;
+- recréer l'API ;
+- afficher les produits après recréation ;
+- vérifier la présence du volume ;
+- nettoyer les conteneurs et le réseau.
 
 ## Conclusion
 
-- `api/Dockerfile.multi` créé avec un build multi-étapes ;
-- étapes `deps` et `runtime` séparées ;
-- image `demo-api:multi` fonctionnelle ;
-- `/health` retourne `{"status":"UP"}` ;
-- secret fourni avec `RUN --mount=type=secret` ;
-- `FAKE-123` absent de `docker history` ;
-- `/root/.npmrc` absent de l'image ;
-- faux `.npmrc` supprimé après les tests ;
-- taille obtenue : `228 MB` contre `232 MB` pour `naive` ;
-- ratio obtenu : environ `1,02×`.
+La Quête 5 est validée :
+
+- volume nommé `demo_pgdata` créé ;
+- PostgreSQL configuré avec ce volume ;
+- API connectée à PostgreSQL ;
+- produit `Casquette Démo` ajouté ;
+- conteneur PostgreSQL supprimé ;
+- conteneur PostgreSQL recréé avec le même volume ;
+- `Casquette Démo` toujours présente après recréation ;
+- volume `demo_pgdata` vérifié ;
+- script `volumes_matt_crayston.sh` fonctionnel.

@@ -1,19 +1,28 @@
-# Rendu — Quête 3 : Dockerfile et sécurité
+# Rendu — Quête 4 : Builds multi-étapes et gestion des secrets
 
 ## Objectif
 
-Durcir le Dockerfile de `demo-api` et l'exécution du conteneur afin de réduire les privilèges et la surface d'attaque.
+Créer un Dockerfile multi-étapes pour `demo-api`, comparer les tailles des images et utiliser un secret au moment du build sans le faire apparaître dans l'image finale.
 
-## 1. Dockerfile durci
+## 1. Dockerfile multi-étapes
 
-Le fichier `api/Dockerfile` a été modifié avec :
+Le fichier `api/Dockerfile.multi` a été créé avec deux étapes :
+
+- `deps` : installation des dépendances de production ;
+- `runtime` : image finale minimale contenant uniquement les éléments nécessaires à l'exécution.
 
 ```dockerfile
-FROM node:22.11-alpine
+# syntax=docker/dockerfile:1
+
+FROM node:22.11-alpine AS deps
 WORKDIR /app
-COPY --chown=node:node package.json package-lock.json ./
-RUN npm ci --omit=dev
-COPY --chown=node:node server.js db.js ./
+COPY package.json package-lock.json ./
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci --omit=dev
+
+FROM node:22.11-alpine AS runtime
+WORKDIR /app
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node server.js db.js package.json ./
 USER node
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
@@ -21,78 +30,51 @@ EXPOSE 3000
 CMD ["node", "server.js"]
 ```
 
-Le Dockerfile respecte les consignes de sécurité :
+## 2. Construction des images
 
-- base épinglée `node:22.11-alpine` ;
-- fichiers copiés avec `--chown=node:node` ;
-- exécution avec l'utilisateur non-root `node` ;
-- `HEALTHCHECK` configuré sur `/health` ;
-- port `3000` exposé.
+Image de référence :
 
-## 2. .dockerignore
+```powershell
+docker build -t demo-api:naive ./api
+```
 
-Le fichier `api/.dockerignore` contient :
+Image multi-étapes :
+
+```powershell
+docker build -f api/Dockerfile.multi -t demo-api:multi ./api
+```
+
+## 3. Comparaison des tailles
+
+Résultat obtenu :
 
 ```text
-node_modules
-.git
-*.md
-.env*
+REPOSITORY   TAG        SIZE
+demo-api     multi      228MB
+demo-api     naive      232MB
 ```
 
-Il exclut notamment les dépendances locales, le dépôt Git, les fichiers Markdown et les fichiers d'environnement.
-
-## 3. Construction de l'image
-
-Commande utilisée :
-
-```powershell
-docker build -t demo-api:hardened ./api
-```
-
-Le build s'est terminé avec succès et l'image `demo-api:hardened` a été créée.
-
-## 4. Preuve du fonctionnement en non-root
-
-Commande utilisée :
-
-```powershell
-docker run --rm demo-api:hardened id
-```
-
-Résultat :
+Calcul du ratio :
 
 ```text
-uid=1000(node) gid=1000(node) groups=1000(node)
+232 / 228 ≈ 1,02×
 ```
 
-Le conteneur s'exécute donc bien avec l'utilisateur non privilégié `node`.
+Le gain obtenu est donc d'environ 4 MB.
 
-## 5. Lancement du conteneur durci
+Le critère de la quête visant une image `multi` au moins 2× plus petite que `naive` n'est pas atteint dans cette configuration.
 
-Le conteneur a été lancé avec :
+La raison est que l'image de départ utilise déjà `node:22.11-alpine` ainsi que `npm ci --omit=dev`. Le multi-étapes permet donc surtout de séparer les étapes de construction et d'exécution, mais ne permet pas ici de supprimer une quantité importante de données.
+
+## 4. Vérification du fonctionnement
+
+Le conteneur multi-étapes a été lancé avec :
 
 ```powershell
-docker run -d --name api -p 8080:3000 `
-  --read-only --tmpfs /tmp:size=16m `
-  --cap-drop ALL --security-opt no-new-privileges `
-  --pids-limit 200 --memory 256m --cpus 1 `
-  demo-api:hardened
+docker run --rm -d -p 8080:3000 --name api-multi-test demo-api:multi
 ```
 
-Les principales protections activées sont :
-
-- `--read-only` : système de fichiers du conteneur en lecture seule ;
-- `--tmpfs /tmp:size=16m` : `/tmp` reste disponible en mémoire ;
-- `--cap-drop ALL` : suppression de toutes les capabilities Linux ;
-- `--security-opt no-new-privileges` : empêche l'escalade de privilèges ;
-- `--pids-limit 200` : limite le nombre de processus ;
-- `--memory 256m` : limite la mémoire ;
-- `--cpus 1` : limite l'utilisation CPU.
-
-## 6. Test de l'API
-
-Commande :
+Test de l'API :
 
 ```powershell
 curl.exe -s http://localhost:8080/health
@@ -104,78 +86,94 @@ Résultat :
 {"status":"UP"}
 ```
 
-L'API continue donc de fonctionner malgré le durcissement.
+L'image `demo-api:multi` fonctionne donc correctement.
 
-## 7. Vérification du HEALTHCHECK
+## 5. Gestion du secret au build
 
-Commande :
+Un faux fichier `.npmrc` a été créé temporairement :
+
+```text
+//registry.npmjs.org/:_authToken=FAKE-123
+```
+
+Le Dockerfile utilise ensuite BuildKit pour monter ce fichier uniquement pendant le `RUN` :
+
+```dockerfile
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci --omit=dev
+```
+
+Le build a été réalisé avec :
 
 ```powershell
-docker ps
+docker build --secret id=npmrc,src="$PWD\.npmrc" -f api/Dockerfile.multi -t demo-api:multi ./api
+```
+
+Le build s'est terminé avec succès.
+
+## 6. Vérification du secret dans l'historique
+
+Commande utilisée :
+
+```powershell
+docker history --no-trunc demo-api:multi | Select-String "FAKE-123"
 ```
 
 Résultat :
 
 ```text
-CONTAINER ID   IMAGE               COMMAND                  CREATED          STATUS                    PORTS                    NAMES
-2e8e9334ab88   demo-api:hardened   "docker-entrypoint.s…"   13 seconds ago   Up 12 seconds (healthy)   0.0.0.0:8080->3000/tcp   api
 ```
 
-Docker indique donc que le conteneur est `healthy`.
+Aucune ligne n'est retournée.
 
-## 8. Preuve du root filesystem en lecture seule
+Le token `FAKE-123` n'apparaît donc pas dans l'historique de l'image.
 
-Commande :
+## 7. Vérification du fichier secret dans l'image
+
+La présence de `/root/.npmrc` a été vérifiée avec :
 
 ```powershell
-docker exec api sh -c 'touch /app/x 2>&1 || echo "rootfs read-only OK"'
+docker run --rm --entrypoint sh demo-api:multi -c "test -e /root/.npmrc && echo 'SECRET PRESENT' || echo 'SECRET ABSENT'"
 ```
 
 Résultat :
 
 ```text
-touch: /app/x: Read-only file system
-rootfs
+SECRET ABSENT
 ```
 
-L'écriture dans `/app` est refusée : le root filesystem est bien en lecture seule.
+Le fichier contenant le secret n'est donc pas présent dans l'image finale.
 
-## 9. Vérification du durcissement
+## 8. Nettoyage du faux secret
 
-Commande :
+Le fichier temporaire `.npmrc` a été supprimé :
 
 ```powershell
-docker inspect -f 'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}}' api
+Remove-Item .npmrc
+```
+
+Vérification :
+
+```powershell
+Test-Path .npmrc
 ```
 
 Résultat :
 
 ```text
-readonly=true capdrop=[ALL]
+False
 ```
 
-La configuration confirme donc :
-
-- `ReadonlyRootfs=true` ;
-- `CapDrop=[ALL]`.
-
-## 10. Nettoyage
-
-Après les tests, le conteneur a été supprimé avec :
-
-```powershell
-docker rm -f api
-```
+Le faux secret n'est donc plus présent localement.
 
 ## Conclusion
 
-- Dockerfile durci avec `node:22.11-alpine` ;
-- exécution en utilisateur non-root ;
-- `HEALTHCHECK` ajouté ;
-- `.dockerignore` vérifié ;
-- image `demo-api:hardened` construite ;
-- API fonctionnelle sur `/health` ;
-- root filesystem en lecture seule ;
-- toutes les capabilities supprimées ;
-- protections `no-new-privileges`, limites CPU/mémoire/PIDs activées ;
-- preuves de sécurité vérifiées avec `docker inspect`.
+- `api/Dockerfile.multi` créé avec un build multi-étapes ;
+- étapes `deps` et `runtime` séparées ;
+- image `demo-api:multi` fonctionnelle ;
+- `/health` retourne `{"status":"UP"}` ;
+- secret fourni avec `RUN --mount=type=secret` ;
+- `FAKE-123` absent de `docker history` ;
+- `/root/.npmrc` absent de l'image ;
+- faux `.npmrc` supprimé après les tests ;
+- taille obtenue : `228 MB` contre `232 MB` pour `naive` ;
+- ratio obtenu : environ `1,02×`.

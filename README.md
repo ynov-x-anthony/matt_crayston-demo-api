@@ -1,97 +1,33 @@
-# demo-api
-
-Le fil rouge des quêtes Docker : une mini-API "catalogue" que tu vas
-conteneuriser, faire persister, mettre en réseau, orchestrer et sécuriser,
-une quête à la fois.
-
-Le métier est volontairement trivial (`Node` + `Express` + `PostgreSQL`,
-un catalogue de produits) : toute la difficulté est sur **Docker**, jamais
-sur le code applicatif.
-
-## Point de départ
-
-Ce dossier est ce que tu clones **avant ta première quête Docker**. Il n'y a
-volontairement **aucun fichier Docker** dedans, ni `Dockerfile`, ni
-`compose.yml` : ce sont précisément les fichiers que tu vas écrire, quête
-après quête, en faisant grossir ce dépôt.
-
-Sans conteneur, cette API ne démarre pas telle quelle : elle a besoin d'un
-PostgreSQL joignable pour répondre. C'est normal, et c'est tout le sujet
-de la première quête que de la faire tourner dans Docker.
-
-## Ce que contient le repo
-
-| Fichier | Rôle |
-|---|---|
-| `api/server.js` | l'API Express (`/`, `/version`, `/health`, `/ready`, `/products`) |
-| `api/db.js` | connexion PostgreSQL, entièrement pilotée par des variables d'environnement |
-| `api/package.json`, `api/package-lock.json` | dépendances (`express`, `pg`) |
-| `db/init.sql` | création de la table `products` + quelques données de démo |
-
-## Les routes de l'API
-
-| Méthode | Route | Effet |
-|---|---|---|
-| `GET` | `/` | infos application + version |
-| `GET` | `/version` | numéro de version courant |
-| `GET` | `/health` | liveness, ne touche pas la base |
-| `GET` | `/ready` | readiness, teste la connexion à la base |
-| `GET` | `/products` | liste des produits |
-| `POST` | `/products` | crée un produit : `{ "name": "...", "price_cents": 1234 }` |
-
-## Ta progression, quête après quête
-
-| Quête | Ce que tu ajoutes au repo |
-|---|---|
-| Découverte de Docker | rien ici, tu manipules des images publiques et un `psql` en conteneur |
-| Le Dockerfile | `api/Dockerfile`, `api/.dockerignore` : l'API tourne enfin dans un conteneur |
-| Les volumes | un volume nommé pour la persistance de PostgreSQL |
-| Les réseaux | des réseaux dédiés, la base jamais exposée directement |
-| Compose | `compose.yml`, `.env.example` : tous les services démarrent ensemble |
-| Dockerfile et sécurité | ton `Dockerfile` durci : utilisateur non-root, `HEALTHCHECK` |
-| Builds multi-étapes et gestion des secrets | `api/Dockerfile.multi` : image allégée, secrets hors de l'image |
-| Analyse de vulnérabilité avec Trivy | un pipeline CI qui scanne ton image et bloque sur les failles critiques |
-
-## Prérequis machine (macOS / Linux / Windows)
-
-- **Docker Engine + Compose v2** : le plugin intégré, invoqué en deux mots
-  `docker compose` (pas l'ancien binaire autonome `docker-compose` v1).
-  `docker compose version` doit répondre `v2.x` ou une version supérieure
-  (v3, v4, v5…). Ce qui compte, c'est que ce ne soit pas du v1 legacy.
-- macOS / Windows : **Docker Desktop** (ou Colima / Rancher Desktop).
-  Sous Windows, backend **WSL 2** : travaille depuis un terminal **WSL**.
-- `git`, `curl`. Node est nécessaire **seulement** si tu régénères
-  `package-lock.json` (`cd api && npm install`, déjà commité ici).
-
----
-
-# Rendu — Quête 2 : Le Dockerfile
+# Rendu — Quête 3 : Dockerfile et sécurité
 
 ## Objectif
 
-Produire une image Docker de `demo-api` permettant de démarrer le serveur Node dans un conteneur.
+Durcir le Dockerfile de `demo-api` et l'exécution du conteneur afin de réduire les privilèges et la surface d'attaque.
 
-## 1. Dockerfile
+## 1. Dockerfile durci
 
-Le fichier `api/Dockerfile` a été créé avec :
+Le fichier `api/Dockerfile` a été modifié avec :
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:22.11-alpine
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY server.js db.js ./
+COPY --chown=node:node server.js db.js ./
+USER node
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 EXPOSE 3000
 CMD ["node", "server.js"]
 ```
 
-Le Dockerfile respecte les bonnes pratiques demandées :
+Le Dockerfile respecte les consignes de sécurité :
 
-- base légère avec `node:22-alpine` ;
-- dépendances copiées avant le code ;
-- installation avec `npm ci --omit=dev` ;
-- port `3000` exposé ;
-- lancement du serveur avec `CMD`.
+- base épinglée `node:22.11-alpine` ;
+- fichiers copiés avec `--chown=node:node` ;
+- exécution avec l'utilisateur non-root `node` ;
+- `HEALTHCHECK` configuré sur `/health` ;
+- port `3000` exposé.
 
 ## 2. .dockerignore
 
@@ -104,34 +40,57 @@ node_modules
 .env*
 ```
 
-Il permet notamment d'exclure les dépendances locales, le dépôt Git, les fichiers Markdown et les fichiers d'environnement du contexte de build.
+Il exclut notamment les dépendances locales, le dépôt Git, les fichiers Markdown et les fichiers d'environnement.
 
 ## 3. Construction de l'image
 
 Commande utilisée :
 
 ```powershell
-docker build -t demo-api:1.0 ./api
+docker build -t demo-api:hardened ./api
 ```
 
-Résultat : build terminé avec succès.
+Le build s'est terminé avec succès et l'image `demo-api:hardened` a été créée.
 
-Image obtenue :
+## 4. Preuve du fonctionnement en non-root
+
+Commande utilisée :
+
+```powershell
+docker run --rm demo-api:hardened id
+```
+
+Résultat :
 
 ```text
-REPOSITORY   TAG   IMAGE ID       SIZE
-demo-api     1.0   e035c32af65c   252MB
+uid=1000(node) gid=1000(node) groups=1000(node)
 ```
 
-## 4. Test du conteneur
+Le conteneur s'exécute donc bien avec l'utilisateur non privilégié `node`.
+
+## 5. Lancement du conteneur durci
 
 Le conteneur a été lancé avec :
 
 ```powershell
-docker run -d --name api -p 8080:3000 demo-api:1.0
+docker run -d --name api -p 8080:3000 `
+  --read-only --tmpfs /tmp:size=16m `
+  --cap-drop ALL --security-opt no-new-privileges `
+  --pids-limit 200 --memory 256m --cpus 1 `
+  demo-api:hardened
 ```
 
-### Test de `/health`
+Les principales protections activées sont :
+
+- `--read-only` : système de fichiers du conteneur en lecture seule ;
+- `--tmpfs /tmp:size=16m` : `/tmp` reste disponible en mémoire ;
+- `--cap-drop ALL` : suppression de toutes les capabilities Linux ;
+- `--security-opt no-new-privileges` : empêche l'escalade de privilèges ;
+- `--pids-limit 200` : limite le nombre de processus ;
+- `--memory 256m` : limite la mémoire ;
+- `--cpus 1` : limite l'utilisation CPU.
+
+## 6. Test de l'API
 
 Commande :
 
@@ -145,77 +104,78 @@ Résultat :
 {"status":"UP"}
 ```
 
-### Test de `/`
+L'API continue donc de fonctionner malgré le durcissement.
+
+## 7. Vérification du HEALTHCHECK
 
 Commande :
 
 ```powershell
-curl.exe -s http://localhost:8080/
+docker ps
 ```
 
 Résultat :
 
-```json
-{"ok":true,"app":"demo-api","version":"dev"}
+```text
+CONTAINER ID   IMAGE               COMMAND                  CREATED          STATUS                    PORTS                    NAMES
+2e8e9334ab88   demo-api:hardened   "docker-entrypoint.s…"   13 seconds ago   Up 12 seconds (healthy)   0.0.0.0:8080->3000/tcp   api
 ```
 
-Le conteneur a ensuite été supprimé avec :
+Docker indique donc que le conteneur est `healthy`.
+
+## 8. Preuve du root filesystem en lecture seule
+
+Commande :
+
+```powershell
+docker exec api sh -c 'touch /app/x 2>&1 || echo "rootfs read-only OK"'
+```
+
+Résultat :
+
+```text
+touch: /app/x: Read-only file system
+rootfs
+```
+
+L'écriture dans `/app` est refusée : le root filesystem est bien en lecture seule.
+
+## 9. Vérification du durcissement
+
+Commande :
+
+```powershell
+docker inspect -f 'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}}' api
+```
+
+Résultat :
+
+```text
+readonly=true capdrop=[ALL]
+```
+
+La configuration confirme donc :
+
+- `ReadonlyRootfs=true` ;
+- `CapDrop=[ALL]`.
+
+## 10. Nettoyage
+
+Après les tests, le conteneur a été supprimé avec :
 
 ```powershell
 docker rm -f api
 ```
 
-## 5. Preuve du cache Docker
-
-Après une modification temporaire de `server.js`, l'image a été reconstruite avec :
-
-```powershell
-docker build -t demo-api:1.0 ./api --progress=plain
-```
-
-La commande `npm ci` est restée en cache :
-
-```text
-#8 [4/5] RUN npm ci --omit=dev
-#8 CACHED
-```
-
-La modification temporaire de `server.js` a ensuite été annulée avec :
-
-```powershell
-git restore api/server.js
-```
-
-## 6. Publication de l'image Docker Hub
-
-L'image a été taguée avec :
-
-```powershell
-docker tag demo-api:1.0 mattlec/demo-api:1.0
-```
-
-Puis publiée avec :
-
-```powershell
-docker push mattlec/demo-api:1.0
-```
-
-Image Docker Hub :
-
-https://hub.docker.com/r/mattlec/demo-api
-
-## 7. Repository GitHub
-
-La quête est disponible sur la branche :
-
-https://github.com/ynov-x-anthony/tp-qu-tes-matt-correction/tree/quete-02-dockerfile
-
 ## Conclusion
 
-- Dockerfile créé ;
-- `.dockerignore` créé ;
-- image Docker construite ;
-- API testée avec succès ;
-- cache Docker vérifié ;
-- image publiée sur Docker Hub ;
-- branche GitHub créée et poussée.
+- Dockerfile durci avec `node:22.11-alpine` ;
+- exécution en utilisateur non-root ;
+- `HEALTHCHECK` ajouté ;
+- `.dockerignore` vérifié ;
+- image `demo-api:hardened` construite ;
+- API fonctionnelle sur `/health` ;
+- root filesystem en lecture seule ;
+- toutes les capabilities supprimées ;
+- protections `no-new-privileges`, limites CPU/mémoire/PIDs activées ;
+- preuves de sécurité vérifiées avec `docker inspect`.

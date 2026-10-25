@@ -99,7 +99,7 @@ Le script ajoute le produit demandé :
 }
 ```
 
-Le produit a été créé avec l'identifiant `4`.
+Le produit a été créé avec l'identifiant `37`.
 
 ## 7. Vérification avant suppression
 
@@ -107,7 +107,7 @@ Avant la suppression des conteneurs, la requête `/products` retourne notamment 
 
 ```json
 {
-  "id": 4,
+  "id": 37,
   "name": "Casquette Démo",
   "price_cents": 1200
 }
@@ -148,7 +148,7 @@ Après la suppression et la recréation du conteneur PostgreSQL, la requête `/p
 
 ```json
 {
-  "id": 4,
+  "id": 37,
   "name": "Casquette Démo",
   "price_cents": 1200
 }

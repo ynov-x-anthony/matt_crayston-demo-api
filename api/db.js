@@ -5,19 +5,30 @@
 // du service "db", resolu par le DNS interne de Docker.
 
 const { Pool } = require('pg');
+const fs = require('fs');
+
+let password = process.env.PGPASSWORD;
+
+if (!password && process.env.PGPASSWORD_FILE) {
+  password = fs.readFileSync(process.env.PGPASSWORD_FILE, 'utf8').trim();
+}
 
 const pool = new Pool({
   host: process.env.PGHOST || 'db',
   port: Number(process.env.PGPORT || 5432),
   user: process.env.PGUSER || 'demo',
-  password: process.env.PGPASSWORD || 'demo',
+  password: password || 'demo',
   database: process.env.PGDATABASE || 'demo',
   max: Number(process.env.PGPOOL_MAX || 5),
   connectionTimeoutMillis: 3000,
 });
 
 pool.on('error', (err) => {
-  console.error(JSON.stringify({ level: 'error', msg: 'pg pool error', err: err.message }));
+  console.error(JSON.stringify({
+    level: 'error',
+    msg: 'pg pool error',
+    err: err.message,
+  }));
 });
 
 async function ping() {

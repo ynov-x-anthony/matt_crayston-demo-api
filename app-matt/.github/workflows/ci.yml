@@ -1,0 +1,46 @@
+name: CI - tests, build et scan Trivy
+
+on:
+push:
+branches: [main]
+pull_request:
+branches: [main]
+workflow_dispatch:
+
+permissions:
+contents: read
+
+jobs:
+test-build-scan:
+runs-on: ubuntu-latest
+defaults:
+run:
+working-directory: app-matt
+
+steps:
+  - name: Récupérer le dépôt
+    uses: actions/checkout@v4
+
+  - name: Installer Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: '22'
+
+  - name: Installer les dépendances
+    run: npm ci
+
+  - name: Lancer les tests
+    run: npm test
+
+  - name: Construire l'image Docker
+    run: docker build --pull -t app-matt:${{ github.sha }} .
+
+  - name: Scanner l'image avec Trivy
+    uses: aquasecurity/trivy-action@0.33.1
+    with:
+      image-ref: app-matt:${{ github.sha }}
+      format: table
+      vuln-type: os,library
+      severity: HIGH,CRITICAL
+      ignore-unfixed: true
+      exit-code: '1'

@@ -1,0 +1,14 @@
+{
+  "name": "app-matt",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mini API Node.js sécurisée pour démontrer Docker multi-stage, Trivy et CI/CD GitHub Actions.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

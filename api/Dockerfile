@@ -1,4 +1,6 @@
-FROM node:22.11-alpine
+FROM node:22-alpine
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev
